@@ -1,454 +1,427 @@
 #!/usr/bin/env python3
 """
-403 Bypass Scanner - Comprehensive tool to test various bypass techniques
+Secret Snatcher - Web Security Scanner for Exposed Sensitive Files
 Author: Security Tool
+Disclaimer: Use only for authorized testing and educational purposes
+Version: 2.0 - Fixed false positive detection
 """
 
 import requests
+import os
 import sys
-import argparse
-import random
-import time
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from colorama import init, Fore, Style
+from datetime import datetime
+import time
+import json
+import re
 
-# Initialize colorama for cross-platform colored output
-init(autoreset=True)
+# Color codes for terminal output
+class Colors:
+    RED = '\033[91m'
+    WHITE = '\033[97m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    YELLOW = '\033[93m'
 
-# Color scheme
-AQUA_GREEN = '\033[96m'  # Aqua-green color
-WHITE = '\033[97m'       # White color
-RESET = '\033[0m'
-
-# Custom color functions
-def color_print(text, color=AQUA_GREEN):
-    print(f"{color}{text}{RESET}")
-
-def aq(text):
-    return f"{AQUA_GREEN}{text}{RESET}"
-
-def wh(text):
-    return f"{WHITE}{text}{RESET}"
-
-# Common User Agents for rotation
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/119.0',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1',
-    'Mozilla/5.0 (iPad; CPU OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1',
-    'curl/8.0.1',
-    'Wget/1.21.3',
-    'Python-urllib/3.11',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 OPR/105.0.0.0',
-]
-
-# Bypass headers to test
-BYPASS_HEADERS = [
-    {'X-Forwarded-For': '127.0.0.1'},
-    {'X-Forwarded-Host': '127.0.0.1'},
-    {'X-Forwarded-For': 'localhost'},
-    {'X-Originating-IP': '127.0.0.1'},
-    {'X-Remote-IP': '127.0.0.1'},
-    {'X-Remote-Addr': '127.0.0.1'},
-    {'X-Client-IP': '127.0.0.1'},
-    {'X-Host': '127.0.0.1'},
-    {'X-Forwarded-Server': '127.0.0.1'},
-    {'Forwarded': 'for=127.0.0.1'},
-    {'X-Original-URL': '/'},
-    {'X-Rewrite-URL': '/'},
-    {'X-Proxy-Host': '127.0.0.1'},
-    {'X-Real-IP': '127.0.0.1'},
-    {'X-Custom-IP-Authorization': '127.0.0.1'},
-    {'Client-IP': '127.0.0.1'},
-    {'True-Client-IP': '127.0.0.1'},
-    {'Cluster-Client-IP': '127.0.0.1'},
-    {'X-WAP-Profile': 'http://127.0.0.1/wap.xml'},
-    {'X-Profile': 'http://127.0.0.1/wap.xml'},
-    {'X-Forwarded-Proto': 'http'},
-    {'X-Forwarded-Scheme': 'http'},
-    {'X-Original-Host': '127.0.0.1'},
-    {'X-Hostname': '127.0.0.1'},
-    {'X-Backend-Host': '127.0.0.1'},
-    {'X-Proxy-IP': '127.0.0.1'},
-    {'X-Forwarded-For': '::1'},
-    {'X-Forwarded-For': '0.0.0.0'},
-    {'X-Forwarded-For': 'localhost, 127.0.0.1'},
-]
-
-# Path bypass techniques
-PATH_BYPASS_TECHNIQUES = [
-    '/path',  # Base path to test
-    '/path/',
-    '/path/.',
-    '/path/..',
-    '/path/%2e',
-    '/path/%2e/',
-    '/path/%2e%2e',
-    '/path/%2e%2e/',
-    '/path/;/',
-    '/path/;/test',
-    '/path/..;/',
-    '/path/random',
-    '/path/%20',
-    '/path/%09',
-    '/path/%23',
-    '/path/%3f',
-    '//path//',
-    '/./path',
-    '/../path',
-    '/%2e%2e/path',
-    '/%2e%2e%2fpath',
-    '/%2e%2e%2f%2e%2e%2fpath',
-    '/PATH/',
-    '/Path/',
-]
-
-# HTTP methods to test
-HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT']
-
-class BypassScanner:
-    def __init__(self, target, timeout=10, threads=10, random_ua=True, verbose=False, show_all=False):
-        self.target = target.rstrip('/')
-        self.timeout = timeout
-        self.threads = threads
-        self.random_ua = random_ua
-        self.verbose = verbose
-        self.show_all = show_all
-        self.results = []
-        self.session = requests.Session()
-        
-        # Initial check for 403
-        self.initial_status = self.get_initial_status()
-        
-    def get_initial_status(self):
-        """Check initial response status"""
-        try:
-            headers = self.get_headers()
-            response = self.session.get(self.target, headers=headers, timeout=self.timeout, allow_redirects=False)
-            return response.status_code
-        except Exception as e:
-            if self.verbose:
-                color_print(f"[-] Error checking initial status: {e}", WHITE)
-            return None
+# Common sensitive files and directories to check
+SENSITIVE_PATHS = [
+    # Configuration files
+    ".env", ".env.local", ".env.production", ".env.backup",
+    "config.php", "config.ini", "config.json", "config.yml",
+    "wp-config.php", "wp-config.bak", "settings.py",
+    "application.properties", "application.yml", "appsettings.json",
     
-    def get_headers(self):
-        """Get headers with optional random User-Agent"""
-        headers = {
+    # Database files
+    ".db", ".sqlite", ".sqlite3", ".db3", ".mdb",
+    "database.sql", "backup.sql", "dump.sql",
+    
+    # Backup files
+    ".bak", ".backup", ".old", ".orig", ".swp", ".swo",
+    "backup.zip", "backup.tar", "backup.tar.gz", "backup.7z",
+    
+    # Log files
+    "error.log", "access.log", "debug.log", "app.log",
+    "laravel.log", "production.log",
+    
+    # Sensitive data files
+    "passwords.txt", "users.txt", "credentials.txt",
+    "emails.txt", "emails.csv", "users.csv",
+    "private.txt", "secret.txt", "keys.txt",
+    
+    # SSH and certificates
+    "id_rsa", "id_dsa", "ssh_key", ".ssh/id_rsa",
+    "cert.pem", "key.pem", "private.key", "server.crt",
+    
+    # Token and API files
+    ".token", "api_keys.txt", "apikeys.txt", "secrets.json",
+    
+    # Git and version control
+    ".git/config", ".gitignore", ".git/logs/HEAD",
+    ".svn/entries", ".hg/hgrc",
+    
+    # PHP info and debug
+    "phpinfo.php", "info.php", "test.php", "debug.php",
+    
+    # Administrative interfaces
+    "admin/backup.sql", "admin/config.php", "backup/admin.sql",
+    
+    # Old and temporary files
+    "old/", "temp/", "tmp/", "backup/",
+    "~/", "~/.bash_history",
+    
+    # Web server files
+    ".htaccess", ".htpasswd", "web.config",
+    
+    # Sensitive directories
+    "backup/", "backups/", "database/", "db/", "sql/",
+    "private/", "secure/", "conf/", "config/", "etc/",
+]
+
+# Patterns to identify sensitive content in responses
+CONTENT_PATTERNS = {
+    "Password": re.compile(r'(?i)(password|passwd|pwd)\s*[=:]\s*[\'"]?[\w\-_!@#$%^&*]+',
+                          re.IGNORECASE),
+    "Email": re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'),
+    "API Key": re.compile(r'(?i)(api[_-]?key|apikey|secret[_-]?key)\s*[=:]\s*[\'"]?[\w\-]+',
+                         re.IGNORECASE),
+    "Database Credentials": re.compile(r'(?i)(db[_-]?user|database[_-]?user|db[_-]?pass|mysql|postgresql)\s*[=:]\s*[\'"]?\w+',
+                                      re.IGNORECASE),
+    "Token": re.compile(r'(?i)(access[_-]?token|auth[_-]?token|bearer)\s*[=:]\s*[\'"]?[\w\-\.]+',
+                       re.IGNORECASE),
+    "IP Address": re.compile(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'),
+    "JWT Token": re.compile(r'eyJ[a-zA-Z0-9\-_]+\.eyJ[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+'),
+}
+
+class SecretSnatcher:
+    def __init__(self, target_url, filename):
+        self.target_url = target_url.rstrip('/')
+        self.filename = filename
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
+            'Connection': 'keep-alive'
+        })
+        self.results = []
+        self.false_positives = []
+        
+    def print_colored(self, text, color=Colors.WHITE):
+        """Print colored text to console"""
+        print(f"{color}{text}{Colors.RESET}")
+    
+    def is_error_page(self, content, url):
+        """Check if response is a custom error page, not the actual file"""
+        content_lower = content.lower()[:5000]  # Check first 5000 chars only
+        filename = url.split('/')[-1].lower()
+        
+        # Common error indicators
+        error_indicators = [
+            "page not found",
+            "404 error",
+            "404 not found",
+            "the requested url was not found",
+            "sorry, the page you requested could not be found",
+            "<title>404",
+            "<title>error",
+            "does not exist",
+            "was not found",
+            "can't be found",
+            "we couldn't find",
+            "not found on this server",
+            "http error 404"
+        ]
+        
+        # Check for error indicators
+        for indicator in error_indicators:
+            if indicator in content_lower:
+                # If the requested filename appears in error message, definitely a false positive
+                if filename in content_lower and len(filename) > 3:
+                    return True
+                # Or if the content is clearly HTML with error patterns
+                if '<html' in content_lower and indicator in content_lower:
+                    return True
+                    
+        # Check if content is HTML with error status in title
+        if '<title>' in content_lower and ('404' in content_lower or 'not found' in content_lower):
+            return True
+            
+        return False
+    
+    def is_likely_legitimate(self, content, url):
+        """Check if the content appears to be the actual requested file"""
+        filename = url.split('/')[-1].lower()
+        content_lower = content.lower()[:2000]
+        
+        # Legitimate indicators for specific file types
+        legitimate_indicators = {
+            '.env': ['db_', 'database', 'password', 'app_env', 'secret_key', 'api_key'],
+            'wp-config.php': ["define('db_name'", "define('db_user'", "table_prefix", "auth_key"],
+            'config.php': ['<?php', '$db', 'config', 'database'],
+            '.json': ['{', '}', '"key"', '"secret"'],
+            '.yml': ['- ', ':', 'database:', 'password:'],
+            '.ini': ['=', '[database]', '[production]']
         }
         
-        if self.random_ua:
-            headers['User-Agent'] = random.choice(USER_AGENTS)
-        else:
-            headers['User-Agent'] = USER_AGENTS[0]
+        # Check for file-specific legitimate content
+        for pattern_file, indicators in legitimate_indicators.items():
+            if filename.endswith(pattern_file) or filename == pattern_file:
+                for indicator in indicators:
+                    if indicator in content_lower:
+                        return True
+        
+        # If content is very short and not HTML, could be legitimate
+        if len(content) < 2000 and not re.search(r'<html|<body', content_lower):
+            return True
             
-        return headers
+        return False
     
-    def test_request(self, url, method='GET', headers=None, description=""):
-        """Test a single request"""
+    def test_url(self, path):
+        """Test a specific URL path for sensitive files"""
+        full_url = urljoin(self.target_url, path)
+        result = {
+            "url": full_url,
+            "status": None,
+            "size": 0,
+            "content_type": None,
+            "findings": [],
+            "error": None,
+            "false_positive": False
+        }
+        
         try:
-            req_headers = self.get_headers()
-            if headers:
-                req_headers.update(headers)
+            # Don't follow redirects automatically
+            response = self.session.get(full_url, timeout=5, allow_redirects=False)
+            result["status"] = response.status_code
+            result["size"] = len(response.content)
+            result["content_type"] = response.headers.get('content-type', 'unknown')
             
-            response = self.session.request(
-                method=method,
-                url=url,
-                headers=req_headers,
-                timeout=self.timeout,
-                allow_redirects=False,
-                verify=False  # Disable SSL verification for testing
-            )
-            
-            # Determine if bypass was successful
-            if response.status_code != 403 and response.status_code < 400:
-                status = "SUCCESS"
-            elif response.status_code == 200:
-                status = "BYPASSED"
-            else:
-                status = "PARTIAL"
+            # Check for successful responses
+            if response.status_code in [200, 301, 302, 403]:
                 
-            return {
-                'status': status,
-                'code': response.status_code,
-                'url': url,
-                'method': method,
-                'headers': headers,
-                'description': description,
-                'length': len(response.content)
-            }
+                # For 200 responses, check for false positives
+                if result["status"] == 200 and 'text' in result["content_type"]:
+                    try:
+                        content = response.text
+                        
+                        # Check if this is likely a false positive (error page)
+                        if self.is_error_page(content, full_url):
+                            result["false_positive"] = True
+                            result["error"] = "False positive - Custom error page detected"
+                            self.print_colored(f"[!] False positive: {full_url} (returns 200 error page)", Colors.YELLOW)
+                            return result
+                        
+                        # Check if legitimate and analyze content
+                        if self.is_likely_legitimate(content, full_url):
+                            for pattern_name, pattern in CONTENT_PATTERNS.items():
+                                matches = pattern.findall(content)
+                                if matches:
+                                    unique_matches = list(set(matches))[:5]
+                                    for match in unique_matches:
+                                        result["findings"].append({
+                                            "type": pattern_name,
+                                            "value": match[:100]
+                                        })
+                            
+                            self.print_colored(f"[+] Found legitimate file: {full_url} (Status: {response.status_code})", Colors.RED)
+                        else:
+                            # Content doesn't match expected patterns but isn't clearly an error page
+                            result["error"] = "Potential false positive - Unusual content"
+                            self.print_colored(f"[?] Suspicious: {full_url} (unusual content)", Colors.YELLOW)
+                            
+                    except Exception as e:
+                        result["error"] = f"Content analysis failed: {str(e)}"
+                
+                elif result["status"] in [301, 302, 403]:
+                    self.print_colored(f"[+] Access restricted/redirect: {full_url} (Status: {response.status_code})", Colors.WHITE)
+                
         except requests.exceptions.Timeout:
-            if self.verbose:
-                color_print(f"[-] Timeout for {method} {url}", WHITE)
-            return None
+            result["error"] = "Timeout"
+        except requests.exceptions.ConnectionError:
+            result["error"] = "Connection Error"
         except Exception as e:
-            if self.verbose:
-                color_print(f"[-] Error: {e}", WHITE)
-            return None
-    
-    def test_header_bypasses(self):
-        """Test various header-based bypass techniques"""
-        color_print(f"\n[+] Testing header-based bypasses...", AQUA_GREEN)
-        
-        for headers in BYPASS_HEADERS:
-            desc = f"Header: {', '.join(headers.keys())}"
-            result = self.test_request(self.target, 'GET', headers, desc)
-            if result and (self.show_all or result['status'] != 'SUCCESS'):
-                self.results.append(result)
-                self.print_result(result)
-    
-    def test_path_bypasses(self):
-        """Test various path manipulation techniques"""
-        color_print(f"\n[+] Testing path-based bypass techniques...", AQUA_GREEN)
-        
-        # Parse target to get base path
-        parsed = urlparse(self.target)
-        base_path = parsed.path or '/'
-        
-        for technique in PATH_BYPASS_TECHNIQUES:
-            if technique == '/path':
-                test_path = base_path
-            else:
-                test_path = technique.replace('/path', base_path) if base_path != '/' else technique.replace('/path', '')
+            result["error"] = str(e)
             
-            url = f"{parsed.scheme}://{parsed.netloc}{test_path}"
-            desc = f"Path technique: {test_path}"
-            result = self.test_request(url, 'GET', None, desc)
-            if result and (self.show_all or result['status'] != 'SUCCESS'):
-                self.results.append(result)
-                self.print_result(result)
-    
-    def test_method_bypasses(self):
-        """Test different HTTP methods"""
-        color_print(f"\n[+] Testing HTTP method bypasses...", AQUA_GREEN)
-        
-        for method in HTTP_METHODS:
-            if method == 'GET':
-                continue  # Already tested
-            desc = f"HTTP Method: {method}"
-            result = self.test_request(self.target, method, None, desc)
-            if result and (self.show_all or result['status'] != 'SUCCESS'):
-                self.results.append(result)
-                self.print_result(result)
-    
-    def test_encoded_urls(self):
-        """Test URL encoding variants"""
-        color_print(f"\n[+] Testing URL encoding bypasses...", AQUA_GREEN)
-        
-        encoded_variants = [
-            '/%2e%2e/%2e%2e/%2e%2e/',
-            '/%2e%2e/',
-            '/%2e%2e%2f',
-            '/%2e%2e%2f%2e%2e%2f',
-            '/%252e%252e%252f',
-            '/%252e%252e/',
-            '/%c0%ae%c0%ae%c0%af',
-            '/%c0%ae%c0%ae/',
-        ]
-        
-        parsed = urlparse(self.target)
-        base_path = parsed.path or '/'
-        
-        for encoded in encoded_variants:
-            test_url = f"{parsed.scheme}://{parsed.netloc}{encoded}{base_path.lstrip('/')}"
-            desc = f"Encoded path: {encoded}"
-            result = self.test_request(test_url, 'GET', None, desc)
-            if result and (self.show_all or result['status'] != 'SUCCESS'):
-                self.results.append(result)
-                self.print_result(result)
-    
-    def test_case_sensitive(self):
-        """Test case manipulation bypasses"""
-        color_print(f"\n[+] Testing case manipulation bypasses...", AQUA_GREEN)
-        
-        parsed = urlparse(self.target)
-        path_parts = parsed.path.split('/')
-        
-        # Test uppercase variations
-        for i, part in enumerate(path_parts):
-            if part and len(part) > 0:
-                modified_parts = path_parts.copy()
-                modified_parts[i] = part.upper()
-                new_path = '/'.join(modified_parts)
-                url = f"{parsed.scheme}://{parsed.netloc}{new_path}"
-                desc = f"Case: {part} -> {part.upper()}"
-                result = self.test_request(url, 'GET', None, desc)
-                if result and (self.show_all or result['status'] != 'SUCCESS'):
-                    self.results.append(result)
-                    self.print_result(result)
-    
-    def test_query_param_bypasses(self):
-        """Test query parameter injection"""
-        color_print(f"\n[+] Testing query parameter bypasses...", AQUA_GREEN)
-        
-        query_params = [
-            '?x=',
-            '?x=y',
-            '?authenticated=true',
-            '?admin=true',
-            '?debug=1',
-            '?bypass=true',
-            '?allow=yes',
-            '?authorized=1',
-            '?isadmin=1',
-            '?role=admin',
-            '?x=../',
-            '?path=../',
-            '?file=../../',
-            '?page=admin',
-            '?action=bypass',
-        ]
-        
-        for param in query_params:
-            url = f"{self.target}{param}"
-            desc = f"Query param: {param}"
-            result = self.test_request(url, 'GET', None, desc)
-            if result and (self.show_all or result['status'] != 'SUCCESS'):
-                self.results.append(result)
-                self.print_result(result)
-    
-    def test_header_injection(self):
-        """Test header injection techniques"""
-        color_print(f"\n[+] Testing advanced header injection...", AQUA_GREEN)
-        
-        # Multiple header combinations
-        combined_tests = [
-            [{'X-Forwarded-For': '127.0.0.1'}, {'X-Original-URL': '/'}],
-            [{'X-Forwarded-For': '127.0.0.1'}, {'X-Rewrite-URL': '/'}],
-            [{'X-Originating-IP': '127.0.0.1'}, {'X-Forwarded-Host': 'localhost'}],
-            [{'Client-IP': '127.0.0.1'}, {'X-Host': 'localhost'}],
-        ]
-        
-        for headers_list in combined_tests:
-            combined_headers = {}
-            for h in headers_list:
-                combined_headers.update(h)
-            desc = f"Combined headers: {', '.join(combined_headers.keys())}"
-            result = self.test_request(self.target, 'GET', combined_headers, desc)
-            if result and (self.show_all or result['status'] != 'SUCCESS'):
-                self.results.append(result)
-                self.print_result(result)
+        return result
     
     def scan(self):
-        """Run all bypass tests"""
-        color_print(f"\n{'='*70}", AQUA_GREEN)
-        color_print(f"403 Bypass Scanner", AQUA_GREEN)
-        color_print(f"Target: {self.target}", AQUA_GREEN)
-        color_print(f"Initial Status: {self.initial_status}", AQUA_GREEN)
-        color_print(f"Random User-Agent: {self.random_ua}", AQUA_GREEN)
-        color_print(f"Threads: {self.threads}", AQUA_GREEN)
-        color_print(f"{'='*70}\n", AQUA_GREEN)
+        """Main scanning function"""
+        self.print_colored(f"\n{Colors.BOLD}Secret Snatcher v2.0 - Starting Scan{Colors.RESET}", Colors.RED)
+        self.print_colored(f"Target: {self.target_url}", Colors.WHITE)
+        self.print_colored(f"Checking {len(SENSITIVE_PATHS)} potential sensitive paths...\n", Colors.WHITE)
         
-        if self.initial_status != 403:
-            color_print(f"[!] Target returned {self.initial_status} instead of 403. Continuing anyway...\n", WHITE)
-        
-        # Run all tests
-        self.test_header_bypasses()
-        self.test_path_bypasses()
-        self.test_method_bypasses()
-        self.test_encoded_urls()
-        self.test_case_sensitive()
-        self.test_query_param_bypasses()
-        self.test_header_injection()
-        
-        # Summary
-        self.print_summary()
+        # Use ThreadPoolExecutor for concurrent scanning
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_path = {executor.submit(self.test_url, path): path for path in SENSITIVE_PATHS}
+            
+            for future in as_completed(future_to_path):
+                result = future.result()
+                # Only add to results if it's a legitimate finding or redirect/403
+                if result["status"] in [200, 301, 302, 403] and not result["false_positive"]:
+                    if result["status"] == 200 and not result["error"]:
+                        self.results.append(result)
+                    elif result["status"] in [301, 302, 403]:
+                        self.results.append(result)
+                elif result["false_positive"]:
+                    # Track false positives separately if needed
+                    pass
     
-    def print_result(self, result):
-        """Print a test result"""
-        if result['status'] == 'BYPASSED':
-            color = AQUA_GREEN
-            status_text = "✓ FULL BYPASS"
-        elif result['status'] == 'PARTIAL':
-            color = AQUA_GREEN
-            status_text = "⚠ PARTIAL BYPASS"
-        else:
-            color = WHITE
-            status_text = "→ SUCCESS"
-        
-        output = f"[{status_text}] {result['method']} {result['url']} -> {result['code']}"
-        if result['description']:
-            output += f" ({result['description']})"
-        
-        color_print(output, color)
+    def save_results(self):
+        """Save scan results to text file"""
+        try:
+            with open(self.filename, 'w', encoding='utf-8') as f:
+                # Write header
+                f.write("=" * 80 + "\n")
+                f.write("SECRET SNATCHER v2.0 - SCAN REPORT\n")
+                f.write("=" * 80 + "\n")
+                f.write(f"Target URL: {self.target_url}\n")
+                f.write(f"Scan Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Paths Checked: {len(SENSITIVE_PATHS)}\n")
+                f.write(f"Legitimate Vulnerabilities Found: {len(self.results)}\n")
+                f.write("=" * 80 + "\n\n")
+                
+                if not self.results:
+                    f.write("No confirmed exposed sensitive files found.\n")
+                    f.write("Note: Some paths may return HTTP 200 but serve custom error pages.\n")
+                else:
+                    # Separate findings by type
+                    confirmed = [r for r in self.results if r["status"] == 200 and r["findings"]]
+                    restricted = [r for r in self.results if r["status"] in [301, 302, 403]]
+                    
+                    if confirmed:
+                        f.write("CONFIRMED EXPOSURES (with sensitive data):\n")
+                        f.write("-" * 40 + "\n")
+                        for idx, result in enumerate(confirmed, 1):
+                            f.write(f"\n[{idx}] {result['url']}\n")
+                            f.write(f"Status Code: {result['status']}\n")
+                            f.write(f"Content Size: {result['size']} bytes\n")
+                            f.write(f"Content Type: {result['content_type']}\n")
+                            
+                            if result['findings']:
+                                f.write("\nSensitive Content Found:\n")
+                                for finding in result['findings']:
+                                    f.write(f"  - {finding['type']}: {finding['value']}\n")
+                            
+                            if result['error']:
+                                f.write(f"Note: {result['error']}\n")
+                            
+                            f.write("\n")
+                    
+                    if restricted:
+                        f.write("\nACCESS RESTRICTED OR REDIRECTED:\n")
+                        f.write("-" * 40 + "\n")
+                        for idx, result in enumerate(restricted, 1):
+                            f.write(f"\n[{idx}] {result['url']}\n")
+                            f.write(f"Status Code: {result['status']}\n")
+                            f.write(f"Content Type: {result['content_type']}\n\n")
+                
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("LEGEND:\n")
+                f.write("- Confirmed Exposures: Files that return 200 with actual content\n")
+                f.write("- Access Restricted: Returns 301/302/403 (may still be interesting)\n")
+                f.write("- False Positives: Files returning 200 but serving error pages\n")
+                f.write("=" * 80 + "\n")
+                f.write("DISCLAIMER: This tool is for educational and authorized testing only.\n")
+                f.write("Unauthorized scanning of websites may be illegal in your jurisdiction.\n")
+                f.write("=" * 80 + "\n")
+            
+            self.print_colored(f"\n[✓] Results saved to: {self.filename}", Colors.RED)
+            return True
+        except Exception as e:
+            self.print_colored(f"\n[✗] Error saving results: {str(e)}", Colors.RED)
+            return False
     
     def print_summary(self):
-        """Print scan summary"""
-        color_print(f"\n{'='*70}", AQUA_GREEN)
-        color_print(f"SCAN SUMMARY", AQUA_GREEN)
-        color_print(f"{'='*70}", AQUA_GREEN)
+        """Print scan summary to console"""
+        self.print_colored(f"\n{Colors.BOLD}SCAN SUMMARY{Colors.RESET}", Colors.RED)
+        self.print_colored("=" * 50, Colors.WHITE)
         
-        bypassed = [r for r in self.results if r['status'] == 'BYPASSED']
-        partial = [r for r in self.results if r['status'] == 'PARTIAL']
+        confirmed = [r for r in self.results if r["status"] == 200 and r["findings"]]
+        restricted = [r for r in self.results if r["status"] in [301, 302, 403]]
         
-        color_print(f"Total tests run: {len(self.results)}", AQUA_GREEN)
-        color_print(f"Successful bypasses: {len(bypassed)}", AQUA_GREEN)
-        color_print(f"Partial bypasses: {len(partial)}", AQUA_GREEN)
+        self.print_colored(f"Confirmed exposures with sensitive data: {len(confirmed)}", Colors.WHITE)
+        self.print_colored(f"Access restricted/redirected files: {len(restricted)}", Colors.WHITE)
+        self.print_colored(f"Total interesting findings: {len(self.results)}", Colors.WHITE)
         
-        if bypassed:
-            color_print(f"\n[+] FULL BYPASSES FOUND:", AQUA_GREEN)
-            for r in bypassed:
-                color_print(f"  → {r['method']} {r['url']} ({r['description']})", WHITE)
+        if confirmed:
+            self.print_colored("\nConfirmed exposed files (verify manually):", Colors.RED)
+            for result in confirmed[:5]:  # Show first 5 in console
+                self.print_colored(f"  - {result['url']}", Colors.WHITE)
+            if len(confirmed) > 5:
+                self.print_colored(f"  ... and {len(confirmed) - 5} more confirmed exposures", Colors.WHITE)
         
-        if partial:
-            color_print(f"\n[+] PARTIAL BYPASSES FOUND:", AQUA_GREEN)
-            for r in partial:
-                color_print(f"  → {r['method']} {r['url']} -> {r['code']} ({r['description']})", WHITE)
-        
-        color_print(f"\n{'='*70}\n", AQUA_GREEN)
+        if restricted and not confirmed:
+            self.print_colored("\nNo confirmed exposures found, but these files exist:", Colors.YELLOW)
+            for result in restricted[:5]:
+                self.print_colored(f"  - {result['url']} (Status: {result['status']})", Colors.WHITE)
+
+def validate_url(url):
+    """Validate and normalize URL"""
+    url = url.strip()
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    return url
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Comprehensive 403 Bypass Scanner',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python3 bypass403.py https://example.com/admin
-  python3 bypass403.py https://example.com/secret --no-random-ua
-  python3 bypass403.py https://example.com/api --threads 20 --verbose
-  python3 bypass403.py https://example.com/private --show-all
-        """
-    )
+    """Main function"""
+    print(f"{Colors.BOLD}{Colors.RED}")
+    print("╔══════════════════════════════════════════════════════════╗")
+    print("║                SECRET SNATCHER v2.0                      ║")
+    print("║         Exposed Sensitive Files Scanner                  ║")
+    print("║      Now with False Positive Detection!                  ║")
+    print("╚══════════════════════════════════════════════════════════╝")
+    print(f"{Colors.RESET}")
     
-    parser.add_argument('target', help='Target URL (e.g., https://example.com/admin)')
-    parser.add_argument('--timeout', type=int, default=10, help='Request timeout in seconds (default: 10)')
-    parser.add_argument('--threads', type=int, default=10, help='Number of threads (default: 10)')
-    parser.add_argument('--no-random-ua', action='store_true', help='Disable random User-Agent rotation')
-    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
-    parser.add_argument('--show-all', '-a', action='store_true', help='Show all results including non-bypass statuses')
+    # Disclaimer
+    print(f"{Colors.RED}{Colors.BOLD}DISCLAIMER:{Colors.RESET}{Colors.WHITE}")
+    print("This tool is for educational purposes and authorized security testing only.")
+    print("Only scan websites you own or have explicit permission to test.")
+    print("Unauthorized scanning may violate laws and regulations.\n")
     
-    args = parser.parse_args()
-    
-    # Disable SSL warnings
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    
-    # Create scanner instance
-    scanner = BypassScanner(
-        target=args.target,
-        timeout=args.timeout,
-        threads=args.threads,
-        random_ua=not args.no_random_ua,
-        verbose=args.verbose,
-        show_all=args.show_all
-    )
-    
-    # Run scan
-    try:
-        scanner.scan()
-    except KeyboardInterrupt:
-        color_print(f"\n\n[!] Scan interrupted by user", WHITE)
+    # Authorization confirmation
+    print(f"{Colors.YELLOW}⚠️  LEGAL REQUIREMENT:{Colors.RESET}")
+    authorized = input(f"{Colors.WHITE}Do you have WRITTEN permission to test this target? (yes/no): {Colors.RESET}")
+    if authorized.lower() not in ['yes', 'y']:
+        print(f"{Colors.RED}Exiting. Never scan without permission.{Colors.RESET}")
         sys.exit(0)
+    
+    # Get target URL
+    while True:
+        target_url = input(f"{Colors.WHITE}Enter target URL (example: https://example.com): {Colors.RESET}").strip()
+        if target_url:
+            target_url = validate_url(target_url)
+            break
+        print(f"{Colors.RED}Please enter a valid URL.{Colors.RESET}")
+    
+    # Get output filename
+    while True:
+        filename = input(f"{Colors.WHITE}Enter filename to save results (example: results.txt): {Colors.RESET}").strip()
+        if filename:
+            if not filename.endswith('.txt'):
+                filename += '.txt'
+            break
+        print(f"{Colors.RED}Please enter a filename.{Colors.RESET}")
+    
+    try:
+        # Initialize and run scanner
+        scanner = SecretSnatcher(target_url, filename)
+        start_time = time.time()
+        scanner.scan()
+        elapsed_time = time.time() - start_time
+        
+        # Save results and show summary
+        scanner.save_results()
+        scanner.print_summary()
+        
+        print(f"{Colors.WHITE}\nScan completed in {elapsed_time:.2f} seconds.{Colors.RESET}")
+        print(f"{Colors.YELLOW}Note: Always manually verify findings - false positives are possible!{Colors.RESET}")
+        
+    except KeyboardInterrupt:
+        print(f"\n{Colors.RED}\n[!] Scan interrupted by user.{Colors.RESET}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"{Colors.RED}\n[!] An error occurred: {str(e)}{Colors.RESET}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
